@@ -1,0 +1,58 @@
+version: '3'
+
+tasks:
+  build:
+    deps: [clean]
+    desc: Builds the dinodb projects into executables
+    cmds:
+      - go build ./cmd/dinodb
+    aliases: [default]
+
+
+  run:
+    deps: [build]
+    vars:
+      PROJECT: '{{.PROJECT}}'
+    desc: Runs dinodb with the specified project
+    summary: |
+      Builds and runs dinodb with the project specified in the PROJECT environment variable.
+      Example usage: `task run PROJECT=go` where "go" is the name of the assignment.
+    cmds: 
+      - ./dinodb -project '{{.PROJECT}}'
+
+
+  clean:
+    desc: Deletes previous build executables/artifacts
+    cmds:
+      - rm -f dinodb
+  
+
+  test:
+    desc: Runs assignment tests present in the "test" directory
+    summary: |
+      Runs assignment tests while checking for data races and timing out after 3 minutes
+      
+      To run the tests for a specific project, set the "PROJECT" environment variable before running this task.
+      For example, `task test PROJECT=pager`. Runs all tests if "PROJECT" is not set
+    vars:
+      PROJECT: '{{.PROJECT | default "."}}'
+    cmds:
+      - go test './test/{{.PROJECT}}/...' -race -timeout 180s
+
+
+  test-verbose:
+    desc: Runs assignment tests present in the "test" directory, printing all results
+    summary: |
+      Runs assignment tests in verbose mode while checking for data races and timing out after 3 minutes
+      
+      To run the tests for a specific project, set the "PROJECT" environment variable before running this task.
+      For example, `task test PROJECT=pager`. Runs all tests if "PROJECT" is not set
+    vars:
+      PROJECT: '{{.PROJECT | default "."}}'
+    cmds:
+      - go test -v './test/{{.PROJECT}}/...' -race -timeout 180s
+
+
+  format:
+    desc: Formats all go files according to go's standards
+    cmds: [gofmt -s -w .]
