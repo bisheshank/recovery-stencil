@@ -201,7 +201,7 @@ func (table *HashTable) Select() ([]entry.Entry, error) {
 	/* SOLUTION {{{ */
 	ret := make([]entry.Entry, 0)
 	for i := int64(0); i < table.pager.GetNumPages(); i++ {
-		bucket, err := table.GetBucket(i)
+		bucket, err := table.GetBucketByPN(i)
 		if err != nil {
 			return nil, err
 		}
