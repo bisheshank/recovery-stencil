@@ -192,6 +192,7 @@ func (index *BTreeIndex) Select() ([]entry.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer cursor.Close()
 
 	// Traverse over all entries.
 	for {
@@ -219,10 +220,10 @@ func (index *BTreeIndex) SelectRange(startKey int64, endKey int64) ([]entry.Entr
 	}
 	ret := make([]entry.Entry, 0)
 	c, err := index.CursorAt(startKey)
-	defer c.Close()
 	if err != nil {
 		return nil, err
 	}
+	defer c.Close()
 	// Get the first entry that the cursor is pointing at
 	checkEntry, err := c.GetEntry()
 	if err != nil {

@@ -23,7 +23,6 @@ func (index *BTreeIndex) CursorAtStart() (cursor.Cursor, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer index.pager.PutPage(curPage)
 	curHeader := pageToNodeHeader(curPage)
 	// Traverse down the leftmost children until we reach a leaf node.
 	for curHeader.nodeType != LEAF_NODE {
@@ -31,9 +30,10 @@ func (index *BTreeIndex) CursorAtStart() (cursor.Cursor, error) {
 		leftmostPN := curNode.getPNAt(0)
 		curPage, err = index.pager.GetPage(leftmostPN)
 		if err != nil {
+			index.pager.PutPage(curNode.page)
 			return nil, err
 		}
-		defer index.pager.PutPage(curPage)
+		index.pager.PutPage(curNode.page)
 		curHeader = pageToNodeHeader(curPage)
 	}
 	// Set the cursor to point to the first entry in the leftmost leaf node.
@@ -118,7 +118,8 @@ func (cursor *BTreeCursor) Next() (atEnd bool) {
 		if err != nil {
 			return true
 		}
-		defer cursor.index.pager.PutPage(nextPage)
+		cursor.index.pager.PutPage(cursor.curNode.page)
+
 		nextNode := pageToLeafNode(nextPage)
 		// Reinitialize the cursor.
 		cursor.curIndex = 0
