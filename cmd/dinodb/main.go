@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"strings"
 
 	"log"
 	"net"
@@ -17,6 +18,7 @@ import (
 
 	"dinodb/pkg/concurrency"
 	"dinodb/pkg/database"
+	"dinodb/pkg/recovery"
 
 	"github.com/google/uuid"
 )
@@ -74,7 +76,7 @@ func startServer(repl *repl.REPL, tm *concurrency.TransactionManager, prompt str
 func main() {
 	// Set up flags.
 	var promptFlag = flag.Bool("c", true, "use prompt?")
-	var projectFlag = flag.String("project", "", "choose project: [go,pager,hash,b+tree,concurrency] (required)")
+	var projectFlag = flag.String("project", "", "choose project: [go,pager,hash,b+tree,concurrency,recovery] (required)")
 
 	// [HASH/BTREE]
 	var dbFlag = flag.String("db", "data/", "DB folder")
@@ -91,6 +93,13 @@ func main() {
 		panic(err)
 	}
 
+	// [RECOVERY]
+	// Set up the log file.
+	err = db.CreateLogFile(LOG_FILE_NAME)
+	if err != nil {
+		panic(err)
+	}
+
 	// [HASH/BTREE]
 	// Setup close conditions.
 	defer db.Close()
@@ -103,6 +112,9 @@ func main() {
 	// [CONCURRENCY]
 	var tm *concurrency.TransactionManager
 	server := false
+
+	// [RECOVERY]
+	var rm *recovery.RecoveryManager
 
 	// Get the right REPLs.
 	switch *projectFlag {
@@ -131,8 +143,23 @@ func main() {
 		tm = concurrency.NewTransactionManager(lm)
 		repls = append(repls, concurrency.TransactionREPL(db, tm))
 
+	// [RECOVERY]
+	case "recovery":
+		server = true
+		lm := concurrency.NewResourceLockManager()
+		tm = concurrency.NewTransactionManager(lm)
+		rm, err = recovery.NewRecoveryManager(db, tm, LOG_FILE_NAME)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		recovery.Prime(strings.TrimSuffix(db.GetBasePath(), "/"))
+		repls = append(repls, recovery.RecoveryREPL(db, tm, rm))
+		// Recover in this case!
+		rm.Recover()
+
 	default:
-		fmt.Println("must specify -project [go,pager,hash,b+tree,concurrency]")
+		fmt.Println("must specify -project [go,pager,hash,b+tree,concurrency,recovery]")
 		return
 	}
 
@@ -143,7 +170,7 @@ func main() {
 		return
 	}
 
-	// Start server if server (concurrency), else run REPL here.
+	// Start server if server (concurrency or recovery), else run REPL here.
 	if server {
 		// 	[CONCURRENCY]
 		startServer(r, tm, prompt, *portFlag)

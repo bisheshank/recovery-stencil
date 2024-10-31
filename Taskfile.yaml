@@ -6,6 +6,8 @@ tasks:
     desc: Builds the dinodb projects into executables
     cmds:
       - go build ./cmd/dinodb
+      - go build ./cmd/dinodb_client
+      - go build ./cmd/dinodb_stress
     aliases: [default]
 
 
@@ -24,7 +26,8 @@ tasks:
   clean:
     desc: Deletes previous build executables/artifacts
     cmds:
-      - rm -f dinodb
+      - rm -f dinodb dinodb_client dinodb_stress
+
   
 
   test:
