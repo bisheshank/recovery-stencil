@@ -263,7 +263,6 @@ func (rm *RecoveryManager) Recover() error {
 		for _, id := range cp.ids {
 			activeTx[id] = true
 			rm.tm.Begin(id)
-			rm.txStack[id] = make([]editLog, 0)
 		}
 	}
 
