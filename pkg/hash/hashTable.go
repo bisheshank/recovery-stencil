@@ -66,17 +66,15 @@ func (table *HashTable) Find(key int64) (entry.Entry, error) {
 		table.RUnlock()
 		return entry.Entry{}, err
 	}
-	// bucket.RLock()
 	table.RUnlock()
 	defer table.pager.PutPage(bucket.page)
+	defer bucket.RUnlock()
 
 	// Find the entry.
 	foundEntry, found := bucket.Find(key)
 	if !found {
-		bucket.RUnlock()
 		return entry.Entry{}, errors.New("not found")
 	}
-	bucket.RUnlock()
 	return foundEntry, nil
 }
 
@@ -90,12 +88,16 @@ func (table *HashTable) ExtendTable() {
 // Make sure to lock both table and buckets
 func (table *HashTable) Insert(key int64, value int64) error {
 	/* SOLUTION {{{ */
+	table.WLock()
+	defer table.WUnlock()
 	hash := Hasher(key, table.globalDepth)
-	bucket, err := table.GetBucket(hash)
+	// [CONCURRENCY]: Using GetAndLockBucket instead of GetBucket
+	bucket, err := table.GetAndLockBucket(hash, WRITE_LOCK)
 	if err != nil {
 		return err
 	}
 	defer table.pager.PutPage(bucket.page)
+	defer bucket.WUnlock()
 	split := bucket.Insert(key, value)
 	if !split {
 		return nil
@@ -199,17 +201,21 @@ func (table *HashTable) Delete(key int64) error {
 // Select all entries in this table.
 func (table *HashTable) Select() ([]entry.Entry, error) {
 	/* SOLUTION {{{ */
+	table.RLock()
+	defer table.RUnlock()
 	ret := make([]entry.Entry, 0)
 	for i := int64(0); i < table.pager.GetNumPages(); i++ {
-		bucket, err := table.GetBucketByPN(i)
+		bucket, err := table.GetAndLockBucketByPN(i, READ_LOCK)
 		if err != nil {
 			return nil, err
 		}
 		entries, err := bucket.Select()
 		table.pager.PutPage(bucket.GetPage())
 		if err != nil {
+			bucket.RUnlock()
 			return nil, err
 		}
+		bucket.RUnlock()
 		ret = append(ret, entries...)
 	}
 	return ret, nil

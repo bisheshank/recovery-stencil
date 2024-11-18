@@ -146,9 +146,9 @@ func (rm *RecoveryManager) Checkpoint() error {
 	defer rm.mtx.Unlock()
 
 	for _, table := range rm.db.GetTables() {
-		table.GetPager().LockAllPages()
+		table.GetPager().LockAllUpdates()
 		table.GetPager().FlushAllPages()
-		table.GetPager().UnlockAllPages()
+		table.GetPager().UnlockAllUpdates()
 	}
 
 	activeIds := make([]uuid.UUID, len(rm.txStack))

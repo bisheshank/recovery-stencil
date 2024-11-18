@@ -17,16 +17,22 @@ type InternalNode struct {
 }
 
 // insert finds the appropriate place in a leaf node to insert a new tuple.
-// [CONCURRENCY]
+// [CONCURRENCY] 
 // - Unlock parents if it is impossible to split in this operation
 // - Continue with hand-over-hand locking with child node
 func (node *InternalNode) insert(key int64, value int64, update bool) (Split, error) {
+	// [CONCURRENCY] Unlock parents if it is impossible to split in this operation
+	if !node.canSplit() {
+		node.unlockParents()
+	}
 	// Insert the entry into the appropriate child node.
 	childIdx := node.search(key)
-	child, childErr := node.getChildAt(childIdx)
+	child, childErr := node.getAndLockChildAt(childIdx)
 	if childErr != nil {
 		return Split{}, childErr
 	}
+	// [CONCURRENCY]
+	node.initChild(child)
 
 	pager := child.getPage().GetPager()
 	defer pager.PutPage(child.getPage())
@@ -38,6 +44,10 @@ func (node *InternalNode) insert(key int64, value int64, update bool) (Split, er
 	// Insert a new key into our node if necessary.
 	if result.isSplit {
 		split, insertSplitErr := node.insertSplit(result)
+		defer node.unlock()
+		if !split.isSplit {
+			node.unlockParents()
+		}
 		return split, insertSplitErr
 	}
 	// This is the case when there was no split and no child err

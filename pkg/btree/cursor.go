@@ -23,17 +23,28 @@ func (index *BTreeIndex) CursorAtStart() (cursor.Cursor, error) {
 	if err != nil {
 		return nil, err
 	}
+	// [CONCURRENCY] Locks the root (RLock)
+	curPage.RLock()
 	curHeader := pageToNodeHeader(curPage)
 	// Traverse down the leftmost children until we reach a leaf node.
 	for curHeader.nodeType != LEAF_NODE {
+		// * holding lock on curPage upon entry
 		curNode := pageToInternalNode(curPage)
 		leftmostPN := curNode.getPNAt(0)
 		curPage, err = index.pager.GetPage(leftmostPN)
 		if err != nil {
+			// unlock self
+			curNode.parent = nil
 			index.pager.PutPage(curNode.page)
+			curNode.page.RUnlock()
 			return nil, err
 		}
+		// [CONCURRENCY] lock child and then unlock parent
+		curPage.RLock()
+		curNode.parent = nil
 		index.pager.PutPage(curNode.page)
+		curNode.page.RUnlock()
+
 		curHeader = pageToNodeHeader(curPage)
 	}
 	// Set the cursor to point to the first entry in the leftmost leaf node.
@@ -106,6 +117,7 @@ func (index *BTreeIndex) CursorAt(key int64) (cursor.Cursor, error) {
 // Cursor's node should enter and leave locked.
 // The node the cursor is in upon return's page should not have been put
 func (cursor *BTreeCursor) Next() (atEnd bool) {
+	// [CONCURRENCY]
 	// If the cursor is at the end of the node, go to the next node.
 	if cursor.curIndex+1 >= cursor.curNode.numKeys {
 		// Get the next node's page number.
@@ -118,7 +130,10 @@ func (cursor *BTreeCursor) Next() (atEnd bool) {
 		if err != nil {
 			return true
 		}
+		// [CONCURRENCY]
+		nextPage.RLock()
 		cursor.index.pager.PutPage(cursor.curNode.page)
+		cursor.curNode.page.RUnlock()
 
 		nextNode := pageToLeafNode(nextPage)
 		// Reinitialize the cursor.

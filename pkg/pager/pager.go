@@ -124,9 +124,9 @@ func (pager *Pager) Close() error {
 	return pager.file.Close()
 }
 
-// fillPageFromDisk populate a page's data field from the data currently on disk.
+// FillPageFromDisk populate a page's data field from the data currently on disk.
 // Returns an error if there was an io problem reading from disk.
-func (pager *Pager) fillPageFromDisk(page *Page) error {
+func (pager *Pager) FillPageFromDisk(page *Page) error {
 	if _, err := pager.file.Seek(page.pagenum*Pagesize, 0); err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func (pager *Pager) GetPage(pagenum int64) (page *Page, err error) {
 
 	// Read the page in from disk.
 	page.dirty = false
-	err = pager.fillPageFromDisk(page)
+	err = pager.FillPageFromDisk(page)
 	if err != nil {
 		pager.freeList.PushTail(page)
 		return nil, err
@@ -250,7 +250,6 @@ func (pager *Pager) PutPage(page *Page) (err error) {
 }
 
 // FlushPage flushes a particular page's data to disk if it is dirty.
-// Concurrency note: the page should at least be read-locked upon entry.
 func (pager *Pager) FlushPage(page *Page) {
 	/* SOLUTION {{{ */
 	if page.IsDirty() {
@@ -264,7 +263,6 @@ func (pager *Pager) FlushPage(page *Page) {
 }
 
 // FlushAllPages flushes all dirty pages to disk.
-// Concurrency note: the pager's mutex and all it's pages should be read-locked upon entry.
 func (pager *Pager) FlushAllPages() {
 	/* SOLUTION {{{ */
 	writer := func(link *list.Link) {
@@ -276,18 +274,18 @@ func (pager *Pager) FlushAllPages() {
 	/* SOLUTION }}} */
 }
 
-// [RECOVERY] Read locks the pager and all of the pager's pages.
-func (pager *Pager) LockAllPages() {
+// [RECOVERY] Block all updates.
+func (pager *Pager) LockAllUpdates() {
 	pager.ptMtx.Lock()
-	for _, pageLink := range pager.pageTable {
-		pageLink.GetValue().(*Page).RLock()
+	for _, page := range pager.pageTable {
+		page.GetValue().(*Page).LockUpdates()
 	}
 }
 
-// [RECOVERY] Read unlocks the pager and all of the pager's pages.
-func (pager *Pager) UnlockAllPages() {
-	for _, pageLink := range pager.pageTable {
-		pageLink.GetValue().(*Page).RUnlock()
+// [RECOVERY] Enable updates.
+func (pager *Pager) UnlockAllUpdates() {
+	for _, page := range pager.pageTable {
+		page.GetValue().(*Page).UnlockUpdates()
 	}
 	pager.ptMtx.Unlock()
 }

@@ -25,15 +25,21 @@ type LeafNode struct {
 //
 // If the update flag is true, then insert will update the value of an existing key instead,
 // returning an error if an existing entry to overwrite is not found.
-// CONCURRENCY:
+// CONCURRENCY: 
 // - Unlock parents if it is impossible to split
 // - The insert should fully complete at the leaf node, so make sure to unlock accordingly
 func (node *LeafNode) insert(key int64, value int64, update bool) (Split, error) {
 	/* SOLUTION {{{ */
+	// [CONCURRENCY] Unlock parents if it is impossible to split in this operation
+	if !node.canSplit() {
+		node.unlockParents()
+	}
+	defer node.unlock()
 	// Get insert position.
 	insertPos := node.search(key)
 	// Check if this is a duplicate entry.
 	if insertPos < node.numKeys && node.getKeyAt(insertPos) == key {
+		defer node.unlockParents()
 		if update {
 			node.updateValueAt(insertPos, value)
 			return Split{}, nil
@@ -43,6 +49,7 @@ func (node *LeafNode) insert(key int64, value int64, update bool) (Split, error)
 	}
 	// Return an error if we're updating a non-existent entry.
 	if update {
+		node.unlockParents()
 		return Split{}, errors.New("cannot update non-existent entry")
 	}
 	// Shift entries to the right if needed.
@@ -55,8 +62,10 @@ func (node *LeafNode) insert(key int64, value int64, update bool) (Split, error)
 	node.modifyEntry(insertPos, entry.New(key, value))
 	// Check if we need to split the node.
 	if node.numKeys >= ENTRIES_PER_LEAF_NODE {
+		// Note we are not unlocking parents here
 		return node.split()
 	}
+	node.unlockParents()
 	return Split{}, nil
 	/* SOLUTION }}} */
 }
