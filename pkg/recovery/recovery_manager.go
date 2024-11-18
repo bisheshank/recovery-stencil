@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	// "go/types"
 	"io"
 	"os"
 	"path/filepath"
@@ -248,78 +249,75 @@ func (rm *RecoveryManager) undo(log editLog) error {
 // Recover carries out a full recovery to the most recent checkpoint according to
 // the write-ahead log. Intended to be used on startup after a crash.
 func (rm *RecoveryManager) Recover() error {
-	rm.mtx.Lock()
-	defer rm.mtx.Unlock()
-
 	logs, checkpointIdx, err := rm.readLogs()
 	if err != nil {
 		return err
 	}
+	if len(logs) == 0 {
+		return nil
+	}
 
 	activeTx := make(map[uuid.UUID]bool)
-	completedTx := make(map[uuid.UUID]bool)
+	rm.txStack = make(map[uuid.UUID][]editLog)
 
-	for i := 0; i < len(logs); i++ {
-		switch l := logs[i].(type) {
-		case startLog:
-		    activeTx[l.id] = true
-		case commitLog:
-		    delete(activeTx, l.id)
-		    completedTx[l.id] = true
-		case checkpointLog:
-		    if i == checkpointIdx {
-			activeTx = make(map[uuid.UUID]bool)
-			for _, id := range l.ids {
-			    activeTx[id] = true
-			    // Start transaction but don't acquire locks yet
-			    err = rm.tm.Begin(id)
-			    if err != nil {
-				return err
-			    }
-			}
-		    }
+	if cp, ok := logs[checkpointIdx].(checkpointLog); ok {
+		for _, id := range cp.ids {
+			activeTx[id] = true
+			rm.tm.Begin(id)
+			rm.txStack[id] = make([]editLog, 0)
 		}
 	}
 
-	// Redo Phase: Replay all operations after checkpoint
+	// Forward pass
 	for i := checkpointIdx; i < len(logs); i++ {
-		log := logs[i]
-
-		if _, ok := log.(startLog); ok {
-		    continue
-		}
-		if _, ok := log.(commitLog); ok {
-		    continue
-		}
-		if _, ok := log.(checkpointLog); ok {
-		    continue
-		}
-
-		err = rm.redo(log)
-		if err != nil {
-		    return fmt.Errorf("redo failed: %w", err)
+		switch log := logs[i].(type) {
+		case startLog:
+			activeTx[log.id] = true
+			rm.tm.Begin(log.id)
+			rm.txStack[log.id] = make([]editLog, 0)
+		case commitLog:
+			delete(activeTx, log.id)
+			delete(rm.txStack, log.id)
+			rm.tm.Commit(log.id)
+		case editLog:
+			if activeTx[log.id] {
+				rm.txStack[log.id] = append(rm.txStack[log.id], log)
+			}
+			err = rm.redo(log)
+			if err != nil {
+				return fmt.Errorf("redo failed: %w", err)
+			}
+		case tableLog:
+			err = rm.redo(log)
+			if err != nil {
+				return fmt.Errorf("redo failed: %w", err)
+			}
 		}
 	}
 
-	// Undo Phase: Rollback uncommitted transactions in reverse order
+
+	// Backward pass
 	for i := len(logs) - 1; i >= 0; i-- {
 		if el, ok := logs[i].(editLog); ok {
-		    if activeTx[el.id] && !completedTx[el.id] {
-			err = rm.undo(el)
-			if err != nil {
-			    return fmt.Errorf("undo failed: %w", err)
+			if activeTx[el.id] {
+				if _, exists := rm.txStack[el.id]; !exists {
+					rm.txStack[el.id] = make([]editLog, 0)
+				}
+
+				err = rm.undo(el)
+				if err != nil {
+				    return fmt.Errorf("undo failed: %w", err)
+				}
 			}
-		    }
 		}
 	}
 
 	// Clean up any remaining transaction states
 	for id := range activeTx {
-		if !completedTx[id] {
-		    err = rm.tm.Commit(id)
-		    if err != nil {
-			return err
-		    }
+		rm.tm.Commit(id)
+		err = rm.Commit(id)
+		if err != nil {
+			return fmt.Errorf("failed to cleanup transaction %s: %w", id, err)
 		}
 	}
 
@@ -329,9 +327,6 @@ func (rm *RecoveryManager) Recover() error {
 // Rollback rolls back the current uncommitted transaction for a client.
 // This is called when you abort a transaction.
 func (rm *RecoveryManager) Rollback(clientId uuid.UUID) error {
-	rm.mtx.Lock()
-	defer rm.mtx.Unlock()
-
 	stack, exists := rm.txStack[clientId]
 	if !exists {
 		return errors.New("no transaction to rollback")
