@@ -147,9 +147,9 @@ func (rm *RecoveryManager) Checkpoint() error {
 	defer rm.mtx.Unlock()
 
 	for _, table := range rm.db.GetTables() {
-		table.GetPager().LockAllUpdates()
+		table.GetPager().LockAllPages()
 		table.GetPager().FlushAllPages()
-		table.GetPager().UnlockAllUpdates()
+		table.GetPager().UnlockAllPages()
 	}
 
 	activeIds := make([]uuid.UUID, len(rm.txStack))
@@ -258,7 +258,6 @@ func (rm *RecoveryManager) Recover() error {
 	}
 
 	activeTx := make(map[uuid.UUID]bool)
-	rm.txStack = make(map[uuid.UUID][]editLog)
 
 	if cp, ok := logs[checkpointIdx].(checkpointLog); ok {
 		for _, id := range cp.ids {
@@ -274,10 +273,8 @@ func (rm *RecoveryManager) Recover() error {
 		case startLog:
 			activeTx[log.id] = true
 			rm.tm.Begin(log.id)
-			rm.txStack[log.id] = make([]editLog, 0)
 		case commitLog:
 			delete(activeTx, log.id)
-			delete(rm.txStack, log.id)
 			rm.tm.Commit(log.id)
 		case editLog:
 			if activeTx[log.id] {
@@ -300,10 +297,6 @@ func (rm *RecoveryManager) Recover() error {
 	for i := len(logs) - 1; i >= 0; i-- {
 		if el, ok := logs[i].(editLog); ok {
 			if activeTx[el.id] {
-				if _, exists := rm.txStack[el.id]; !exists {
-					rm.txStack[el.id] = make([]editLog, 0)
-				}
-
 				err = rm.undo(el)
 				if err != nil {
 				    return fmt.Errorf("undo failed: %w", err)
