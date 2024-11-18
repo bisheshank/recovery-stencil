@@ -275,17 +275,17 @@ func (pager *Pager) FlushAllPages() {
 }
 
 // [RECOVERY] Block all updates.
-func (pager *Pager) LockAllUpdates() {
+func (pager *Pager) LockAllPages() {
 	pager.ptMtx.Lock()
 	for _, page := range pager.pageTable {
-		page.GetValue().(*Page).LockUpdates()
+		page.GetValue().(*Page).RLock()
 	}
 }
 
 // [RECOVERY] Enable updates.
-func (pager *Pager) UnlockAllUpdates() {
+func (pager *Pager) UnlockAllPages() {
 	for _, page := range pager.pageTable {
-		page.GetValue().(*Page).UnlockUpdates()
+		page.GetValue().(*Page).RUnlock()
 	}
 	pager.ptMtx.Unlock()
 }
