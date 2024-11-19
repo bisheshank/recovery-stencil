@@ -86,10 +86,6 @@ func (rm *RecoveryManager) Edit(clientId uuid.UUID, table database.Index, action
 	rm.mtx.Lock()
 	defer rm.mtx.Unlock()
 
-	if _, exists := rm.txStack[clientId]; !exists {
-		return errors.New("no transaction started for this client")
-	}
-
 	el := editLog {
 		id: clientId,
 		tablename: table.GetName(),
@@ -99,13 +95,9 @@ func (rm *RecoveryManager) Edit(clientId uuid.UUID, table database.Index, action
 		newval: newval,
 	}
 
-	err := rm.flushLog(el)
-	if err != nil {
-		return err
-	}
-
 	rm.txStack[clientId] = append(rm.txStack[clientId], el)
-	return nil
+
+	return rm.flushLog(el)
 }
 
 // Start records the start of a transaction to the write-ahead log.
@@ -113,11 +105,12 @@ func (rm *RecoveryManager) Start(clientId uuid.UUID) error {
 	rm.mtx.Lock()
 	defer rm.mtx.Unlock()
 
+	rm.txStack[clientId] = make([]editLog, 0)
+
 	sl := startLog{
 		id: clientId,
 	}
 
-	rm.txStack[clientId] = make([]editLog, 0)
 	return rm.flushLog(sl)
 }
 
@@ -126,17 +119,13 @@ func (rm *RecoveryManager) Commit(clientId uuid.UUID) error {
 	rm.mtx.Lock()
 	defer rm.mtx.Unlock()
 
+	delete(rm.txStack, clientId)
+
 	cl := commitLog{
 		id: clientId,
 	}
 
-	err := rm.flushLog(cl)
-	if err != nil {
-		return err
-	}
-
-	delete(rm.txStack, clientId)
-	return nil
+	return rm.flushLog(cl)
 }
 
 // Checkpoint flushes all pages to disk and creates a checkpoint to recover the database
@@ -251,68 +240,70 @@ func (rm *RecoveryManager) undo(log editLog) error {
 func (rm *RecoveryManager) Recover() error {
 	logs, checkpointIdx, err := rm.readLogs()
 	if err != nil {
-		return err
-	}
-	if len(logs) == 0 {
-		return nil
+		return fmt.Errorf("failed to read logs: %w", err)
 	}
 
-	activeTx := make(map[uuid.UUID]bool)
+	// Track active transactions
+	activeTxns := make(map[uuid.UUID]bool)
 
-	if cp, ok := logs[checkpointIdx].(checkpointLog); ok {
-		for _, id := range cp.ids {
-			activeTx[id] = true
-			rm.tm.Begin(id)
-		}
-	}
-
-	// Forward pass
+	// Redo phase: replay operations from last checkpoint
 	for i := checkpointIdx; i < len(logs); i++ {
-		switch log := logs[i].(type) {
-		case startLog:
-			activeTx[log.id] = true
-			rm.tm.Begin(log.id)
-		case commitLog:
-			delete(activeTx, log.id)
-			rm.tm.Commit(log.id)
-		case editLog:
-			if activeTx[log.id] {
-				rm.txStack[log.id] = append(rm.txStack[log.id], log)
-			}
-			err = rm.redo(log)
-			if err != nil {
-				return fmt.Errorf("redo failed: %w", err)
-			}
-		case tableLog:
-			err = rm.redo(log)
-			if err != nil {
-				return fmt.Errorf("redo failed: %w", err)
-			}
+		if err := rm.handleRedoLog(logs[i], activeTxns); err != nil {
+			return fmt.Errorf("redo phase failed: %w", err)
 		}
 	}
 
+	// Begin recovery transactions
+	for txnID := range activeTxns {
+		rm.tm.Begin(txnID)
+	}
 
-	// Backward pass
+	// Undo phase: roll back uncommitted transactions
+	if err := rm.performUndoPhase(logs, activeTxns); err != nil {
+		return fmt.Errorf("undo phase failed: %w", err)
+	}
+
+	return nil
+}
+
+func (rm *RecoveryManager) handleRedoLog(log log, activeTxns map[uuid.UUID]bool) error {
+	switch l := log.(type) {
+	case tableLog, editLog:
+		if err := rm.redo(l); err != nil {
+			return err
+		}
+		if el, ok := l.(editLog); ok {
+			activeTxns[el.id] = true
+		}
+	case startLog:
+		activeTxns[l.id] = true
+	case commitLog:
+		delete(activeTxns, l.id)
+	}
+	return nil
+}
+
+func (rm *RecoveryManager) performUndoPhase(logs []log, activeTxns map[uuid.UUID]bool) error {
 	for i := len(logs) - 1; i >= 0; i-- {
-		if el, ok := logs[i].(editLog); ok {
-			if activeTx[el.id] {
-				err = rm.undo(el)
-				if err != nil {
-				    return fmt.Errorf("undo failed: %w", err)
+		switch l := logs[i].(type) {
+		case editLog:
+			if activeTxns[l.id] {
+				if err := rm.undo(l); err != nil {
+					return err
 				}
 			}
+		case startLog:
+			if activeTxns[l.id] {
+				if err := rm.tm.Commit(l.id); err != nil {
+					return err
+				}
+				if err := rm.Commit(l.id); err != nil {
+					return err
+				}
+				delete(activeTxns, l.id)
+			}
 		}
 	}
-
-	// Clean up any remaining transaction states
-	for id := range activeTx {
-		rm.tm.Commit(id)
-		err = rm.Commit(id)
-		if err != nil {
-			return fmt.Errorf("failed to cleanup transaction %s: %w", id, err)
-		}
-	}
-
 	return nil
 }
 
